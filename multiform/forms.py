@@ -7,13 +7,14 @@ from functools import reduce
 import operator
 
 from django.core.exceptions import ImproperlyConfigured
-from django.forms.forms import BaseForm
-from django.forms.util import ErrorList
+from django.forms.forms import BaseForm, DeclarativeFieldsMetaclass, BoundField
+from django.forms.util import ErrorList, ErrorDict
 from django.forms.widgets import Media
+from django.utils import six
 from django.utils.safestring import mark_safe
 
 
-class MultiForm(BaseForm):
+class MultiForm(six.with_metaclass(DeclarativeFieldsMetaclass, BaseForm)):
     """
     A BaseForm subclass that can wrap several sub-forms into one entity.
     To use it, define a `base_forms` attribute which should be a mapping
@@ -21,16 +22,15 @@ class MultiForm(BaseForm):
     It can then be used like a regular form.
     """
 
-    base_fields = None  # Needed to bypass the absence of fancy metaclass
     _baseform_signature = OrderedDict([  # TODO: signature objects (pep 362)
-        ('data', None),
-        ('files', None),
-        ('auto_id', 'id_%s'),
-        ('prefix', None),
-        ('initial', None),
-        ('error_class', ErrorList),
-        ('label_suffix', ':'),
-        ('empty_permitted', False),
+                                         ('data', None),
+                                         ('files', None),
+                                         ('auto_id', 'id_%s'),
+                                         ('prefix', None),
+                                         ('initial', None),
+                                         ('error_class', ErrorList),
+                                         ('label_suffix', ':'),
+                                         ('empty_permitted', False),
     ])
 
     def __init__(self, *args, **kwargs):
@@ -170,38 +170,52 @@ class MultiForm(BaseForm):
     # or in a list.
 
     def __iter__(self):
-        return chain.from_iterable(self._combine_values('__iter__', call=True))
+        for field in self.fields:
+            yield self[field]
+        yield from chain.from_iterable(self._combine_values('__iter__', call=True))
 
     def __getitem__(self, name):
-        return self.forms[name]
+        if name in self.fields:
+            return BoundField(self, self.fields[name], name)
+        else:
+            return self.forms[name]
 
     def _html_output(self, *args, **kwargs):
         rendered = self._combine_values('_html_output', call=True, filter=True,
                                         call_args=args, call_kwargs=kwargs)
-        return mark_safe('\n'.join(rendered))
+        return mark_safe(super(MultiForm, self)._html_output(*args, **kwargs) + '\n'.join(rendered))
 
     def non_field_errors(self):
-        return self._combine('non_field_errors', call=True, filter=True)
+        non_field_errors = self._combine('non_field_errors', call=True, filter=True)
+        non_field_errors.update(super(MultiForm, self).non_field_errors())
+        return non_field_errors
 
     def full_clean(self):
         # This will call full_clean on all sub-forms
         # (and populate their _errors attribute):
-        self._errors = self._combine('errors', filter=True)
+        self._errors = ErrorDict()
+        super(MultiForm, self).full_clean()
+        errors = self._combine('errors', filter=True)
 
-        if not self._errors:
+        if self._errors:
+            errors.update(self._errors)
+
+        self._errors = errors
+
+        if not self._errors and self.is_bound:
             # Each sub-form's cleaned_data is now populated
-            self.cleaned_data = self._combine('cleaned_data')
+            self.cleaned_data.update(self._combine('cleaned_data'))
 
     @property
     def changed_data(self):
-        return self._combine('changed_data', filter=True)
+        return super(MultiForm, self).changed_data or self._combine('changed_data', filter=True)
 
     @property
     def media(self):
         return reduce(operator.add, self._combine_values('media'), Media())
 
     def is_multipart(self):
-        return any(self._combine_values('is_multipart', call=True))
+        return super(MultiForm, self).is_multipart() or any(self._combine_values('is_multipart', call=True))
 
     def hidden_fields(self):
         return list(self._combine_chain('hidden_fields', call=True))
