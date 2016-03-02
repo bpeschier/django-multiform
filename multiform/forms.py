@@ -8,7 +8,7 @@ import operator
 
 from django.core.exceptions import ImproperlyConfigured
 from django.forms.forms import BaseForm, DeclarativeFieldsMetaclass, BoundField
-from django.forms.util import ErrorList, ErrorDict
+from django.forms.utils import ErrorList, ErrorDict
 from django.forms.widgets import Media
 from django.utils import six
 from django.utils.safestring import mark_safe
